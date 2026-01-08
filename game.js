@@ -96,17 +96,22 @@
 
   // うさぎがこの高さ（画面上）より上へ行ったらカメラが追う
   const FOLLOW_LINE_RATIO = 0.40; // 画面上から40%
-  const CAMERA_EASE = 0.10;       // 追従の滑らかさ（小さいほど安定）
+ // ★上下追従（落ちたらカメラも落ちる）
+// - 上方向：速めに追従
+// - 下方向：少しゆっくり追従（酔い防止）
+const CAMERA_EASE_UP = 0.14;
+const CAMERA_EASE_DOWN = 0.07;
 
-  // ★登り感：カメラは「上にだけ」動く（戻らない）
-  function updateCamera(bunnyWorldY, H) {
-    const followLine = H * FOLLOW_LINE_RATIO;          // 画面上の追従ライン
-    const targetCameraY = bunnyWorldY - followLine;    // うさぎをラインに置く
-    // カメラは上に行く（cameraYがより小さくなる）ときだけ追従
-    if (targetCameraY < cameraY) {
-      cameraY = lerp(cameraY, targetCameraY, CAMERA_EASE);
-    }
-  }
+function updateCamera(bunnyWorldY, H) {
+  const followLine = H * FOLLOW_LINE_RATIO;       // 画面上の追従ライン
+  const targetCameraY = bunnyWorldY - followLine; // うさぎをラインに置く
+
+  // targetCameraY が cameraY より小さい => カメラが上へ
+  // targetCameraY が cameraY より大きい => カメラが下へ
+  const ease = (targetCameraY < cameraY) ? CAMERA_EASE_UP : CAMERA_EASE_DOWN;
+  cameraY = lerp(cameraY, targetCameraY, ease);
+}
+
 
   /* =========================
    * Bunny (world coords)
