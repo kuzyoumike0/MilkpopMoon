@@ -1,508 +1,682 @@
+// BGM.js（非module / ✅WB差し替え耐性版）
+// ✅ 追加：BGM購入（コイン消費）
+// - BGMは「購入済み」じゃないと再生しない（通常BGMも購入制）
+// - ハンバーガーUI内にショップ（購入ボタン）を追加
+// - WBのコインAPI差を吸収（getCoin/spendCoins/addCoin/coins直叩き等）
+// - app.js が window.WB を再代入しても再パッチ継続
+
 (() => {
   "use strict";
 
-  /* =========================
-   * Canvas
-   * ========================= */
-  const canvas = document.getElementById("c");
-  const ctx = canvas.getContext("2d");
+  const LS_KEY_SETTINGS = "milkpop_bgm_settings_v1";
+  const LS_KEY_OWNED    = "milkpop_bgm_owned_v1";
 
-  function resize() {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    canvas.width  = Math.floor(canvas.clientWidth  * dpr);
-    canvas.height = Math.floor(canvas.clientHeight * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    initStarsAndClouds();
-  }
-  window.addEventListener("resize", resize);
-
-  /* =========================
-   * Assets（指定パス）
-   * ========================= */
-  const IMG_SRC = "./assets/bunny.png";
-  const img = new Image();
-  img.src = IMG_SRC;
-
-  let imgReady = false;
-  let imgError = "";
-  img.onload = () => { imgReady = true; };
-  img.onerror = () => {
-    imgReady = false;
-    imgError =
-      `画像読み込み失敗: ${IMG_SRC}\n` +
-      `✅ assets/bunny.png が存在するか\n` +
-      `✅ 大文字小文字・拡張子が一致するか\n` +
-      `✅ Live Server など http で開いているか`;
+  const TRACKS = {
+    morning: "./assets/bgm_morning.mp3",
+    day:     "./assets/bgm_day.mp3",
+    night:   "./assets/bgm_night.mp3",
+    depart:  "./assets/bgm_depart.mp3",
   };
 
-  /* ===== SE（指定パス） ===== */
-  const CLICK_SE_SRC = "./assets/se/Onoma-Pop03-1(High).mp3";
-  const clickSE = new Audio(CLICK_SE_SRC);
-  clickSE.volume = 0.8;
+  // ✅ BGM価格（好きに調整OK）
+  const PRICES = {
+    morning: 3000,
+    day:     3000,
+    night:   3000,
+    depart:  8000,
+  };
 
-  let audioUnlocked = false;
-  function unlockAudioOnce() {
-    if (audioUnlocked) return;
-    audioUnlocked = true;
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  function loadSettings() {
     try {
-      clickSE.muted = true;
-      clickSE.currentTime = 0;
-      const p = clickSE.play();
-      if (p && typeof p.then === "function") {
-        p.then(() => {
-          clickSE.pause();
-          clickSE.currentTime = 0;
-          clickSE.muted = false;
-        }).catch(() => { clickSE.muted = false; });
-      } else {
-        clickSE.pause();
-        clickSE.currentTime = 0;
-        clickSE.muted = false;
+      const raw = localStorage.getItem(LS_KEY_SETTINGS);
+      if (!raw) return { volume: 0.5, muted: false, enabled: true };
+      const j = JSON.parse(raw);
+      return {
+        volume: clamp(Number(j.volume ?? 0.5), 0, 1),
+        muted: !!j.muted,
+        enabled: j.enabled !== false,
+      };
+    } catch {
+      return { volume: 0.5, muted: false, enabled: true };
+    }
+  }
+  function saveSettings(s) {
+    try { localStorage.setItem(LS_KEY_SETTINGS, JSON.stringify(s)); } catch {}
+  }
+
+  function loadOwned() {
+    try {
+      const raw = localStorage.getItem(LS_KEY_OWNED);
+      if (!raw) return {};
+      const j = JSON.parse(raw);
+      return (j && typeof j === "object") ? j : {};
+    } catch {
+      return {};
+    }
+  }
+  function saveOwned(o) {
+    try { localStorage.setItem(LS_KEY_OWNED, JSON.stringify(o)); } catch {}
+  }
+
+  let settings = loadSettings();
+  let owned = loadOwned(); // { morning:true, day:true ... }
+
+  // BGM.js側の解禁フラグ
+  let unlocked = false;
+  let currentKey = null;
+  let specialKey = null;
+
+  let audio = null;
+
+  function ensureAudio() {
+    if (audio) return audio;
+    audio = new Audio();
+    audio.loop = true;
+    audio.preload = "auto";
+    applyVolume();
+    return audio;
+  }
+
+  function applyVolume() {
+    ensureAudio();
+    audio.volume = settings.muted ? 0 : settings.volume;
+  }
+
+  function pickByTime() {
+    const h = new Date().getHours();
+    if (h >= 5 && h <= 10) return "morning";
+    if (h >= 11 && h <= 17) return "day";
+    return "night";
+  }
+
+  function isOwned(key) {
+    return !!owned?.[key];
+  }
+
+  function resolveKeyBySrc(src) {
+    // TRACKSに一致するならそのkeyを返す
+    for (const k of Object.keys(TRACKS)) {
+      if (TRACKS[k] === src) return k;
+    }
+    return null;
+  }
+
+  /* =========================
+   * WBコイン互換ヘルパ
+   * ========================= */
+  function getCoinsWB() {
+    const WB = window.WB;
+    try {
+      if (WB && typeof WB.getCoin === "function") return Number(WB.getCoin()) || 0;
+      if (WB && typeof WB.getCoins === "function") return Number(WB.getCoins()) || 0;
+      if (WB && typeof WB.coins === "number") return Number(WB.coins) || 0;
+      // HUDから読める場合
+      const el = document.getElementById("coinValue");
+      if (el) return Number(el.textContent || "0") || 0;
+    } catch {}
+    return 0;
+  }
+
+  function setCoinsWB(next) {
+    const WB = window.WB;
+    const v = Math.max(0, Math.floor(Number(next) || 0));
+
+    try {
+      if (WB && typeof WB.setCoin === "function") { WB.setCoin(v); return true; }
+      if (WB && typeof WB.setCoins === "function") { WB.setCoins(v); return true; }
+      if (WB && typeof WB.coins === "number") { WB.coins = v; }
+      const el = document.getElementById("coinValue");
+      if (el) el.textContent = String(v);
+      return true;
+    } catch {}
+    return false;
+  }
+
+  function spendCoinsWB(amount) {
+    const WB = window.WB;
+    const a = Math.max(0, Math.floor(Number(amount) || 0));
+    if (!a) return true;
+
+    try {
+      // 最優先：専用API
+      if (WB && typeof WB.spendCoins === "function") return !!WB.spendCoins(a);
+      if (WB && typeof WB.spendCoin === "function") return !!WB.spendCoin(a);
+
+      // 次点：addCoinがある場合はマイナス加算
+      if (WB && typeof WB.addCoin === "function") {
+        const cur = getCoinsWB();
+        if (cur < a) return false;
+        WB.addCoin(-a);
+        // HUD更新がない実装もあるので念のため
+        const after = getCoinsWB();
+        if (after === cur) setCoinsWB(cur - a);
+        return true;
       }
+
+      // 最後：直叩き
+      const cur = getCoinsWB();
+      if (cur < a) return false;
+      setCoinsWB(cur - a);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function toast(msg) {
+    try {
+      const id = "bgmToastV1";
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement("div");
+        el.id = id;
+        el.style.cssText = `
+position:fixed; left:50%; top:16px; transform:translateX(-50%);
+z-index:2147483646;
+background:rgba(0,0,0,.78); color:#fff;
+padding:10px 12px; border-radius:14px;
+font-weight:900; font-size:13px;
+box-shadow:0 14px 40px rgba(0,0,0,.25);
+pointer-events:none; opacity:0; transition:opacity .18s ease;
+`;
+        document.body.appendChild(el);
+      }
+      el.textContent = msg;
+      el.style.opacity = "1";
+      clearTimeout(el.__t);
+      el.__t = setTimeout(() => { el.style.opacity = "0"; }, 1200);
     } catch {}
   }
 
+  async function tryPlay(src, keyHint = null) {
+    ensureAudio();
+    if (!src) return false;
+
+    // ✅ 購入チェック
+    const key = keyHint || resolveKeyBySrc(src);
+    if (key && !isOwned(key)) {
+      stop();
+      return false;
+    }
+
+    const nextHref = new URL(src, location.href).href;
+    if (audio.src !== nextHref) {
+      try { audio.pause(); } catch {}
+      audio.src = src;
+      audio.currentTime = 0;
+    }
+
+    applyVolume();
+
+    if (!settings.enabled) return false;
+    if (!unlocked) return false;
+
+    try {
+      await audio.play();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function stop() {
+    if (!audio) return;
+    try { audio.pause(); } catch {}
+  }
+
+  function startNormalBgm(force = false) {
+    if (specialKey) return;
+
+    const want = pickByTime();
+
+    // ✅ 未購入なら、買ってある通常BGMへフォールバック（なければ停止）
+    let key = want;
+    if (!isOwned(key)) {
+      const fallback = ["morning", "day", "night"].find(isOwned) || null;
+      if (!fallback) {
+        currentKey = null;
+        stop();
+        return;
+      }
+      key = fallback;
+    }
+
+    if (!force && key === currentKey) return;
+
+    const src = TRACKS[key];
+    currentKey = key;
+    tryPlay(src, key);
+  }
+
+  async function unlockBgmOnce() {
+    if (unlocked) return;
+    unlocked = true;
+
+    // ✅ unlock時に必ず一度再生を試す（クリック直後に走る想定）
+    if (specialKey) {
+      const src = TRACKS[specialKey];
+      if (src) await tryPlay(src, specialKey);
+    } else {
+      startNormalBgm(true);
+    }
+  }
+
   /* =========================
-   * Helpers
+   * ✅ WBパッチ（差し替え耐性）
    * ========================= */
-  const clamp01 = (x) => Math.max(0, Math.min(1, x));
-  const smoothstep = (t) => { t = clamp01(t); return t * t * (3 - 2 * t); };
-  const lerp = (a, b, t) => a + (b - a) * t;
+  let lastWBRef = null;
+
+  function patchWB(WB) {
+    if (!WB || typeof WB !== "object") return;
+
+    if (lastWBRef === WB && WB.__bgmPatchedV3) return;
+
+    lastWBRef = WB;
+
+    if (!WB.__bgmPatchedV3) WB.__bgmPatchedV3 = { done: false };
+
+    const prevUnlock = (typeof WB.unlockAudioOnce === "function") ? WB.unlockAudioOnce : null;
+
+    WB.unlockAudioOnce = async () => {
+      try { prevUnlock?.(); } catch {}
+      await unlockBgmOnce();
+    };
+
+    WB.bgm = WB.bgm || {};
+    WB.bgm.mountUI = mountUI;
+    WB.bgm.playSpecial = playSpecial;
+    WB.bgm.clearSpecial = clearSpecial;
+    WB.bgm.start = () => startNormalBgm(true);
+    WB.bgm.stop = () => stop();
+    WB.bgm.TRACKS = TRACKS;
+
+    // ✅ 購入APIも公開
+    WB.bgm.isOwned = isOwned;
+    WB.bgm.buy = buyBgm;
+    WB.bgm.getCoins = () => getCoinsWB();
+    WB.bgm.PRICES = PRICES;
+
+    WB.__bgmPatchedV3.done = true;
+
+    if (unlocked && settings.enabled) {
+      if (specialKey) {
+        const src = TRACKS[specialKey];
+        if (src) tryPlay(src, specialKey);
+      } else {
+        startNormalBgm(true);
+      }
+    }
+  }
+
+  function startWBWatcher() {
+    patchWB(window.WB);
+    const start = Date.now();
+    const watchMs = 15000;
+    const t = setInterval(() => {
+      patchWB(window.WB);
+      if (Date.now() - start > watchMs) clearInterval(t);
+    }, 200);
+  }
 
   /* =========================
-   * Physics
+   * Autoplay unlock
    * ========================= */
-  const GRAVITY = 1800;     // +下
-  const AIR_DRAG = 0.995;
-  const BOUNCE = 0.35;
-  const FLOOR_FRICTION = 0.85;
+  function setupAutoplayUnlock() {
+    const handler = async () => {
+      patchWB(window.WB);
+      try { await window.WB?.unlockAudioOnce?.(); } catch {}
+    };
+    window.addEventListener("pointerdown", handler, { passive: true });
+    window.addEventListener("keydown", handler, { passive: true });
+    window.addEventListener("touchstart", handler, { passive: true });
+  }
 
-  const JUMP_SPEED_MIN = 850;
-  const JUMP_SPEED_MAX = 1250;
-  const ANGLE_MIN = (-110) * Math.PI / 180; // 真上±20°
-  const ANGLE_MAX = (-70)  * Math.PI / 180;
-
-  const HIT_PADDING = 10;
+  function startTimeWatcher() {
+    setInterval(() => startNormalBgm(false), 30_000);
+  }
 
   /* =========================
-   * World / Camera
-   * =========================
-   * worldY: 下が+ / 地面は 0 / 上に登るほどマイナス
-   */
-  const FLOOR_Y = 0;
+   * ✅ 購入ロジック
+   * ========================= */
+  function buyBgm(key) {
+    if (!TRACKS[key] || !PRICES[key]) return { ok: false, reason: "unknown" };
+    if (isOwned(key)) return { ok: true, reason: "already" };
 
-  // cameraY = 画面上端が指すワールドY（screenY = worldY - cameraY）
-  let cameraY = 0;
+    const price = PRICES[key];
+    const cur = getCoinsWB();
+    if (cur < price) return { ok: false, reason: "coins", need: price, have: cur };
 
-  // うさぎがこの高さ（画面上）より上へ行ったらカメラが追う
-  const FOLLOW_LINE_RATIO = 0.40; // 画面上から40%
- // ★上下追従（落ちたらカメラも落ちる）
-// - 上方向：速めに追従
-// - 下方向：少しゆっくり追従（酔い防止）
-const CAMERA_EASE_UP = 0.14;
-const CAMERA_EASE_DOWN = 0.07;
+    const ok = spendCoinsWB(price);
+    if (!ok) return { ok: false, reason: "coins_api" };
 
-function updateCamera(bunnyWorldY, H) {
-  const followLine = H * FOLLOW_LINE_RATIO;       // 画面上の追従ライン
-  const targetCameraY = bunnyWorldY - followLine; // うさぎをラインに置く
+    owned[key] = true;
+    saveOwned(owned);
+    toast(`✅ ${key} を購入！ -${price}🪙`);
+    // 購入直後、該当時間帯 or 特別なら再生を試す
+    if (settings.enabled) {
+      if (specialKey === key) tryPlay(TRACKS[key], key);
+      else startNormalBgm(true);
+    }
+    return { ok: true, reason: "bought" };
+  }
 
-  // targetCameraY が cameraY より小さい => カメラが上へ
-  // targetCameraY が cameraY より大きい => カメラが下へ
-  const ease = (targetCameraY < cameraY) ? CAMERA_EASE_UP : CAMERA_EASE_DOWN;
-  cameraY = lerp(cameraY, targetCameraY, ease);
+  /* =========================
+   * Settings UI（ハンバーガー）
+   * ========================= */
+  function mountUI({ position = "top-right", title = "BGM" } = {}) {
+    if (document.getElementById("bgmHamburgerV1")) return;
+
+    const style = document.createElement("style");
+    style.textContent = `
+#bgmHamburgerV1{
+  position:fixed;
+  z-index:2147483000;
+  ${position.includes("top") ? "top:10px;" : "bottom:10px;"}
+  ${position.includes("right") ? "right:10px;" : "left:10px;"}
+  width:44px;height:44px;
+  border:none;border-radius:14px;
+  background:rgba(255,255,255,.95);
+  box-shadow:0 12px 32px rgba(0,0,0,.18);
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
 }
+#bgmHamburgerV1 .bars{ width:18px; height:14px; position:relative; }
+#bgmHamburgerV1 .bars i{
+  position:absolute; left:0; right:0;
+  height:2px; border-radius:2px;
+  background:#333;
+}
+#bgmHamburgerV1 .bars i:nth-child(1){ top:0; }
+#bgmHamburgerV1 .bars i:nth-child(2){ top:6px; }
+#bgmHamburgerV1 .bars i:nth-child(3){ top:12px; }
 
+#bgmPanelV1{
+  position:fixed;
+  z-index:2147483001;
+  ${position.includes("top") ? "top:62px;" : "bottom:62px;"}
+  ${position.includes("right") ? "right:10px;" : "left:10px;"}
+  width:min(340px, 92vw);
+  background:rgba(255,255,255,.98);
+  border-radius:16px;
+  box-shadow:0 18px 44px rgba(0,0,0,.22);
+  padding:12px 12px 10px;
+  display:none;
+}
+#bgmPanelV1 .row{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+#bgmPanelV1 .ttl{ font-weight:900; }
+#bgmPanelV1 .sub{ font-size:12px; opacity:.75; margin-top:2px; }
+#bgmPanelV1 .btn{
+  border:none; border-radius:12px;
+  padding:8px 10px;
+  font-weight:800;
+  background:#ffd6e7;
+  cursor:pointer;
+}
+#bgmPanelV1 .btn.ghost{ background:#fff; box-shadow:0 10px 24px rgba(0,0,0,.08); }
+#bgmPanelV1 .slider{ width:100%; margin:10px 0 6px; }
+#bgmPanelV1 .fine{ font-size:12px; opacity:.75; }
+#bgmPanelV1 .sep{ height:1px; background:rgba(0,0,0,.08); margin:10px 0; }
 
-  /* =========================
-   * Bunny (world coords)
-   * ========================= */
-  const bunny = {
-    x: 0,
-    y: 0,      // worldY
-    vx: 0,
-    vy: 0,
-    w: 120,
-    h: 120,
-    onGround: false,
-  };
+#bgmShopV1{ margin-top:8px; }
+#bgmShopV1 .shopttl{ font-weight:900; margin:6px 0 8px; }
+#bgmShopV1 .item{
+  display:flex; align-items:center; justify-content:space-between;
+  gap:10px; padding:8px 8px;
+  border-radius:14px;
+  background:rgba(0,0,0,.03);
+  margin-bottom:8px;
+}
+#bgmShopV1 .name{ font-weight:900; }
+#bgmShopV1 .meta{ font-size:12px; opacity:.75; margin-top:2px; }
+#bgmShopV1 .right{ display:flex; align-items:center; gap:8px; }
+#bgmShopV1 .tag{
+  font-size:12px; font-weight:900;
+  padding:4px 8px; border-radius:999px;
+  background:#fff;
+  box-shadow:0 10px 24px rgba(0,0,0,.08);
+}
+#bgmShopV1 .buy{
+  border:none; border-radius:12px;
+  padding:8px 10px;
+  font-weight:900;
+  cursor:pointer;
+  background:#ffd6e7;
+}
+#bgmShopV1 .buy[disabled]{ opacity:.55; cursor:not-allowed; }
+`;
+    document.head.appendChild(style);
 
-  function resetBunny() {
-    const W = canvas.clientWidth;
-    bunny.x = W * 0.5;
-    bunny.y = FLOOR_Y - bunny.h / 2;
-    bunny.vx = 0;
-    bunny.vy = 0;
-    bunny.onGround = true;
-    cameraY = 0;
-  }
+    const btn = document.createElement("button");
+    btn.id = "bgmHamburgerV1";
+    btn.type = "button";
+    btn.innerHTML = `<span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>`;
+    btn.title = "BGM設定";
 
-  function rand(min, max) { return min + Math.random() * (max - min); }
+    const panel = document.createElement("div");
+    panel.id = "bgmPanelV1";
+    panel.innerHTML = `
+<div class="row">
+  <div>
+    <div class="ttl">${title}</div>
+    <div class="sub" id="bgmStateTextV1">未再生（画面をクリックで開始）</div>
+  </div>
+  <button class="btn ghost" id="bgmCloseV1" type="button">×</button>
+</div>
 
-  function jumpBoost() {
-    clickSE.currentTime = 0;
-    clickSE.play().catch(() => {});
+<div class="sep"></div>
 
-    const angle = rand(ANGLE_MIN, ANGLE_MAX);
-    const speed = rand(JUMP_SPEED_MIN, JUMP_SPEED_MAX);
+<div class="row">
+  <button class="btn" id="bgmToggleV1" type="button">ON</button>
+  <button class="btn ghost" id="bgmMuteV1" type="button">ミュート</button>
+</div>
 
-    bunny.vx += Math.cos(angle) * speed * 0.45;
-    bunny.vy = Math.min(bunny.vy, 0);
-    bunny.vy += Math.sin(angle) * speed;
+<input class="slider" id="bgmVolV1" type="range" min="0" max="100" step="1" />
 
-    bunny.onGround = false;
-  }
+<div class="fine" id="bgmInfoV1"></div>
 
-  // world→screen
-  function bunnyScreenRect() {
-    const sx = bunny.x;
-    const sy = bunny.y - cameraY;
-    return {
-      left: sx - bunny.w / 2,
-      top:  sy - bunny.h / 2,
-      w: bunny.w,
-      h: bunny.h,
-      cx: sx,
-      cy: sy,
+<div class="sep"></div>
+
+<div id="bgmShopV1">
+  <div class="row">
+    <div class="shopttl">BGMショップ</div>
+    <div class="tag" id="bgmCoinTagV1">🪙 0</div>
+  </div>
+
+  ${renderShopItem("morning", "朝BGM", "朝の時間帯（5-10時）")}
+  ${renderShopItem("day",     "昼BGM", "昼の時間帯（11-17時）")}
+  ${renderShopItem("night",   "夜BGM", "夜の時間帯（それ以外）")}
+  ${renderShopItem("depart",  "旅立ちBGM", "特別BGM（旅立ち演出など）")}
+</div>
+`;
+
+    document.body.appendChild(btn);
+    document.body.appendChild(panel);
+
+    const stateText = panel.querySelector("#bgmStateTextV1");
+    const info = panel.querySelector("#bgmInfoV1");
+    const toggle = panel.querySelector("#bgmToggleV1");
+    const mute = panel.querySelector("#bgmMuteV1");
+    const vol = panel.querySelector("#bgmVolV1");
+    const close = panel.querySelector("#bgmCloseV1");
+    const coinTag = panel.querySelector("#bgmCoinTagV1");
+
+    const buyBtns = {
+      morning: panel.querySelector(`#bgmBuy_morning`),
+      day:     panel.querySelector(`#bgmBuy_day`),
+      night:   panel.querySelector(`#bgmBuy_night`),
+      depart:  panel.querySelector(`#bgmBuy_depart`),
     };
-  }
-
-  function isHit(mx, my) {
-    const r = bunnyScreenRect();
-    const left = r.left - HIT_PADDING;
-    const top  = r.top  - HIT_PADDING;
-    const w    = r.w + HIT_PADDING * 2;
-    const h    = r.h + HIT_PADDING * 2;
-    return mx >= left && mx <= left + w && my >= top && my <= top + h;
-  }
-
-  function getPointerPos(e) {
-    const rect = canvas.getBoundingClientRect();
-    if (typeof e.clientX === "number" && typeof e.clientY === "number") {
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    }
-    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
-    if (t) return { x: t.clientX - rect.left, y: t.clientY - rect.top };
-    return { x: 0, y: 0 };
-  }
-
-  // スクロール防止 + 操作
-  canvas.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    unlockAudioOnce();
-    const p = getPointerPos(e);
-    if (isHit(p.x, p.y)) jumpBoost();
-  }, { passive: false });
-  canvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
-  canvas.addEventListener("touchmove",  (e) => e.preventDefault(), { passive: false });
-
-  /* =========================
-   * Background (登り感)
-   * ========================= */
-  // 高度で色変化
-  const BG_GROUND = { r: 255, g: 245, b: 250 };
-  const BG_SKY    = { r: 180, g: 220, b: 255 };
-  const BG_SPACE  = { r: 30,  g: 40,  b: 80  };
-  function lerpColor(c1, c2, t) {
-    return {
-      r: Math.round(lerp(c1.r, c2.r, t)),
-      g: Math.round(lerp(c1.g, c2.g, t)),
-      b: Math.round(lerp(c1.b, c2.b, t)),
+    const ownedTags = {
+      morning: panel.querySelector(`#bgmOwned_morning`),
+      day:     panel.querySelector(`#bgmOwned_day`),
+      night:   panel.querySelector(`#bgmOwned_night`),
+      depart:  panel.querySelector(`#bgmOwned_depart`),
     };
-  }
 
-  // ★登ってる感を強くする：高度ライン（目盛り）+ パララックス帯
-  function drawClimbBackground(W, H, altitude, heightT) {
-    // 1) ベース色
-    let bg;
-    if (heightT < 0.5) bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
-    else bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
-    ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
-    ctx.fillRect(0, 0, W, H);
+    function refreshShopUI() {
+      const c = getCoinsWB();
+      if (coinTag) coinTag.textContent = `🪙 ${c}`;
 
-    // 2) パララックス帯（ゆっくり流れる層）: altitudeで下に流れて見える
-    //    ※ altitudeが増えるほど背景が動く＝登ってる感
-    const p1 = (altitude * 0.15) % (H * 0.6);
-    const p2 = (altitude * 0.30) % (H * 0.8);
+      for (const k of Object.keys(PRICES)) {
+        const ownedNow = isOwned(k);
+        const price = PRICES[k];
 
-    ctx.save();
-    ctx.globalAlpha = 0.10 + 0.20 * heightT;
-    ctx.fillStyle = "rgba(255,255,255,0.6)";
-    for (let i = -2; i < 6; i++) {
-      const y = i * (H * 0.6) + (H * 0.6) - p1;
-      ctx.fillRect(0, y, W, 22);
-    }
-    ctx.globalAlpha = 0.08 + 0.18 * heightT;
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
-    for (let i = -2; i < 6; i++) {
-      const y = i * (H * 0.8) + (H * 0.8) - p2;
-      ctx.fillRect(0, y, W, 10);
-    }
-    ctx.restore();
-
-    // 3) 高度目盛りライン（これが一番“登ってる”を作る）
-    //    画面上で「上から下へ流れる」ように表示：世界座標で等間隔に刻む
-    const tickStep = 250; // world単位（px）ごとに目盛り
-    // 画面上端/下端が示す worldY を使って、表示範囲の目盛りを描く
-    const topWorld = cameraY;
-    const bottomWorld = cameraY + H;
-
-    // 目盛りは worldY=-tickValue（高度）なので、worldYが負の領域で出てくる
-    const minAlt = Math.max(0, Math.floor((FLOOR_Y - bottomWorld) / tickStep) * tickStep);
-    const maxAlt = Math.max(0, Math.ceil((FLOOR_Y - topWorld) / tickStep) * tickStep);
-
-    ctx.save();
-    ctx.strokeStyle = "rgba(0,0,0,0.10)";
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.font = "12px system-ui, -apple-system, Segoe UI, sans-serif";
-
-    for (let a = minAlt; a <= maxAlt; a += tickStep) {
-      const worldY = FLOOR_Y - a;       // altitude a の worldY
-      const y = worldY - cameraY;       // screenY
-      // 太線/細線
-      const major = (a % (tickStep * 4) === 0);
-      ctx.globalAlpha = major ? 0.22 : 0.12;
-      ctx.lineWidth = major ? 2 : 1;
-
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
-
-      if (major) {
-        ctx.globalAlpha = 0.55;
-        ctx.fillText(`ALT ${a}`, 10, y - 6);
+        if (ownedTags[k]) {
+          ownedTags[k].textContent = ownedNow ? "購入済み" : `${price}🪙`;
+          ownedTags[k].style.opacity = ownedNow ? "0.85" : "0.95";
+        }
+        if (buyBtns[k]) {
+          buyBtns[k].disabled = ownedNow || (c < price);
+          buyBtns[k].textContent = ownedNow ? "OK" : "購入";
+        }
       }
     }
-    ctx.restore();
-  }
 
-  /* =========================
-   * Stars & Rainbow Clouds（高度演出）
-   * ========================= */
-  const SPACE_START_T = 0.72;
-  const SPACE_FULL_T  = 0.95;
-  const CLOUD_START_T = 0.45;
-  const CLOUD_FULL_T  = 0.70;
+    function refreshUI() {
+      vol.value = String(Math.round(settings.volume * 100));
+      toggle.textContent = settings.enabled ? "ON" : "OFF";
+      toggle.style.opacity = settings.enabled ? "1" : "0.6";
+      mute.textContent = settings.muted ? "ミュート中" : "ミュート";
+      mute.style.opacity = settings.muted ? "0.75" : "1";
 
-  const STAR_COUNT = 90;
-  const STAR_TWINKLE_SPEED = 1.6;
-  const CLOUD_COUNT = 8;
+      const nowKey = specialKey || currentKey || pickByTime();
+      const mode = specialKey ? `特別BGM：${specialKey}` : `通常：${nowKey}`;
+      const u = unlocked ? "解禁済み" : "未解禁（クリックで開始）";
+      const own = (nowKey && TRACKS[nowKey])
+        ? (isOwned(nowKey) ? "購入済み" : "未購入")
+        : "-";
+      info.textContent = `${mode} / ${u} / ${own}`;
 
-  const stars = [];
-  const clouds = [];
+      if (stateText) {
+        const playing = audio && !audio.paused && unlocked && settings.enabled && !settings.muted && audio.volume > 0;
+        stateText.textContent = playing ? "再生中" : "停止中（クリックで開始）";
+      }
 
-  function initStarsAndClouds() {
-    stars.length = 0;
-    clouds.length = 0;
+      refreshShopUI();
+    }
 
-    const W = canvas.clientWidth;
-    const H = canvas.clientHeight;
+    btn.addEventListener("click", () => {
+      panel.style.display = (panel.style.display === "block") ? "none" : "block";
+      refreshUI();
+    });
 
-    for (let i = 0; i < STAR_COUNT; i++) {
-      stars.push({
-        x: Math.random() * W,
-        y: Math.random() * H,
-        r: 0.8 + Math.random() * 1.8,
-        phase: Math.random() * Math.PI * 2,
-        spd: 0.6 + Math.random() * 1.6,
+    close.addEventListener("click", () => { panel.style.display = "none"; });
+
+    toggle.addEventListener("click", async () => {
+      settings.enabled = !settings.enabled;
+      saveSettings(settings);
+
+      if (!settings.enabled) stop();
+      else {
+        patchWB(window.WB);
+        try { await window.WB?.unlockAudioOnce?.(); } catch {}
+        if (specialKey) tryPlay(TRACKS[specialKey], specialKey);
+        else startNormalBgm(true);
+      }
+      refreshUI();
+    });
+
+    mute.addEventListener("click", () => {
+      settings.muted = !settings.muted;
+      saveSettings(settings);
+      applyVolume();
+      refreshUI();
+    });
+
+    vol.addEventListener("input", async () => {
+      settings.volume = clamp(Number(vol.value) / 100, 0, 1);
+      saveSettings(settings);
+      applyVolume();
+
+      if (settings.enabled) {
+        patchWB(window.WB);
+        try { await window.WB?.unlockAudioOnce?.(); } catch {}
+        if (specialKey) tryPlay(TRACKS[specialKey], specialKey);
+        else startNormalBgm(false);
+      }
+      refreshUI();
+    });
+
+    // ✅ 購入ボタン
+    for (const k of Object.keys(PRICES)) {
+      buyBtns[k]?.addEventListener("click", async () => {
+        patchWB(window.WB);
+        try { await window.WB?.unlockAudioOnce?.(); } catch {} // クリック時にオーディオ解禁も兼ねる
+
+        const r = buyBgm(k);
+        if (!r.ok) {
+          if (r.reason === "coins") toast(`🪙 足りない！ ${r.have} / ${r.need}`);
+          else toast("購入できませんでした");
+        }
+        refreshUI();
       });
     }
 
-    for (let i = 0; i < CLOUD_COUNT; i++) {
-      clouds.push({
-        x: Math.random() * W,
-        y: H * (0.18 + Math.random() * 0.45),
-        w: W * (0.35 + Math.random() * 0.45),
-        h: 40 + Math.random() * 55,
-        a: 0.25 + Math.random() * 0.35,
-        drift: (Math.random() < 0.5 ? -1 : 1) * (12 + Math.random() * 28),
-      });
-    }
+    document.addEventListener("pointerdown", (e) => {
+      if (panel.style.display !== "block") return;
+      if (panel.contains(e.target) || btn.contains(e.target)) return;
+      panel.style.display = "none";
+    });
+
+    setInterval(refreshUI, 500);
+    refreshUI();
   }
 
-  function drawStars(heightT, timeSec) {
-    const starT = smoothstep((heightT - SPACE_START_T) / (SPACE_FULL_T - SPACE_START_T));
-    if (starT <= 0) return;
-
-    const W = canvas.clientWidth;
-    const H = canvas.clientHeight;
-
-    ctx.save();
-    for (const s of stars) {
-      const tw = 0.55 + 0.45 * Math.sin(timeSec * STAR_TWINKLE_SPEED * s.spd + s.phase);
-      ctx.globalAlpha = tw * starT;
-
-      ctx.beginPath();
-      ctx.arc(s.x % W, s.y % H, s.r, 0, Math.PI * 2);
-      ctx.fillStyle = "white";
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  function pathRoundRect(x, y, w, h, r) {
-    r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
-
-  function drawRainbowClouds(heightT, dt) {
-    const cloudT = smoothstep((heightT - CLOUD_START_T) / (CLOUD_FULL_T - CLOUD_START_T));
-    if (cloudT <= 0) return;
-
-    const W = canvas.clientWidth;
-
-    ctx.save();
-    for (const c of clouds) {
-      c.x += c.drift * dt;
-      if (c.x < -c.w) c.x = W;
-      if (c.x > W) c.x = -c.w;
-
-      const g = ctx.createLinearGradient(c.x, c.y, c.x + c.w, c.y);
-      g.addColorStop(0,   "rgba(255,100,200,0)");
-      g.addColorStop(0.2, "rgba(255,150,80,0.7)");
-      g.addColorStop(0.4, "rgba(255,255,120,0.7)");
-      g.addColorStop(0.6, "rgba(120,255,170,0.7)");
-      g.addColorStop(0.8, "rgba(120,190,255,0.7)");
-      g.addColorStop(1,   "rgba(180,140,255,0)");
-
-      ctx.globalAlpha = c.a * cloudT;
-      ctx.fillStyle = g;
-
-      const r = c.h / 2;
-      if (typeof ctx.roundRect === "function") {
-        ctx.beginPath();
-        ctx.roundRect(c.x, c.y, c.w, c.h, r);
-        ctx.fill();
-      } else {
-        pathRoundRect(c.x, c.y, c.w, c.h, r);
-        ctx.fill();
-      }
-    }
-    ctx.restore();
+  function renderShopItem(key, label, desc) {
+    const price = PRICES[key] ?? 0;
+    return `
+<div class="item">
+  <div>
+    <div class="name">${label}</div>
+    <div class="meta">${desc}</div>
+  </div>
+  <div class="right">
+    <div class="tag" id="bgmOwned_${key}">${price}🪙</div>
+    <button class="buy" id="bgmBuy_${key}" type="button">購入</button>
+  </div>
+</div>`;
   }
 
   /* =========================
-   * Main Loop
+   * Public API
    * ========================= */
-  let last = performance.now();
-
-  function step(now) {
-    const dt = Math.min(0.033, (now - last) / 1000);
-    last = now;
-
-    const W = canvas.clientWidth;
-    const H = canvas.clientHeight;
-
-    /* ---- physics (world) ---- */
-    bunny.vy += GRAVITY * dt;
-    bunny.x += bunny.vx * dt;
-    bunny.y += bunny.vy * dt;
-    bunny.vx *= Math.pow(AIR_DRAG, dt * 60);
-
-    // 壁
-    const halfW = bunny.w / 2;
-    if (bunny.x < halfW) { bunny.x = halfW; bunny.vx *= -0.5; }
-    if (bunny.x > W - halfW) { bunny.x = W - halfW; bunny.vx *= -0.5; }
-
-    // 地面
-    const halfH = bunny.h / 2;
-    const bottom = bunny.y + halfH;
-    if (bottom > FLOOR_Y) {
-      bunny.y = FLOOR_Y - halfH;
-      if (Math.abs(bunny.vy) > 250) {
-        bunny.vy *= -BOUNCE;
-        bunny.onGround = false;
-      } else {
-        bunny.vy = 0;
-        bunny.onGround = true;
-        bunny.vx *= FLOOR_FRICTION;
+  function playSpecial(keyOrSrc) {
+    // ✅ キー指定のときは「購入済み」必須（カスタムsrcは自由）
+    if (TRACKS[keyOrSrc]) {
+      if (!isOwned(keyOrSrc)) {
+        toast("未購入です");
+        return;
       }
-    } else {
-      bunny.onGround = false;
+      specialKey = keyOrSrc;
+      ensureAudio();
+      tryPlay(TRACKS[keyOrSrc], keyOrSrc);
+      return;
     }
 
-    /* ---- camera (only up) ---- */
-    updateCamera(bunny.y, H);
+    const src = keyOrSrc;
+    if (!src) return;
+    specialKey = "__custom__";
+    ensureAudio();
+    tryPlay(src, null);
+  }
 
-    /* ---- altitude & heightT ---- */
-    const altitude = Math.max(0, FLOOR_Y - bunny.y); // 上ほど大きい
-    let heightT = altitude / (H * 0.75);
-    heightT = clamp01(heightT);
-
-    /* ---- background (climb feel) ---- */
-    drawClimbBackground(W, H, altitude, heightT);
-
-    /* ---- effects (screen space) ---- */
-    drawStars(heightT, now / 1000);
-    drawRainbowClouds(heightT, dt);
-
-    /* ---- draw world with camera ---- */
-    ctx.save();
-    ctx.translate(0, -cameraY);
-
-    // 地面ライン
-    ctx.strokeStyle = "rgba(0,0,0,0.12)";
-    ctx.beginPath();
-    ctx.moveTo(0, FLOOR_Y);
-    ctx.lineTo(W, FLOOR_Y);
-    ctx.stroke();
-
-    // うさぎ
-    if (imgReady) {
-      ctx.drawImage(img, bunny.x - bunny.w / 2, bunny.y - bunny.h / 2, bunny.w, bunny.h);
-    } else {
-      ctx.fillStyle = "rgba(255,120,170,0.9)";
-      ctx.beginPath();
-      ctx.arc(bunny.x, bunny.y, Math.min(bunny.w, bunny.h) * 0.35, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-
-    /* ---- UI: 高度表示（固定） ---- */
-    ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
-    ctx.fillText(`ALT: ${Math.floor(altitude)}`, 12, 28);
-    ctx.restore();
-
-    /* ---- image error ---- */
-    if (!imgReady && imgError) {
-      ctx.save();
-      ctx.fillStyle = "rgba(255,255,255,0.92)";
-      ctx.fillRect(12, 52, Math.min(W - 24, 560), 120);
-      ctx.fillStyle = "#b00020";
-      ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
-      const lines = imgError.split("\n");
-      lines.forEach((line, i) => ctx.fillText(line, 20, 78 + i * 18));
-      ctx.restore();
-    }
-
-    requestAnimationFrame(step);
+  function clearSpecial() {
+    specialKey = null;
+    startNormalBgm(true);
   }
 
   /* =========================
-   * Start
+   * Boot
    * ========================= */
-  img.onload = () => {
-    imgReady = true;
+  (function boot() {
+    ensureAudio();
+    startWBWatcher();
+    setupAutoplayUnlock();
+    startNormalBgm(false);
+    startTimeWatcher();
 
-    // ★うさぎを小さくする：0.35 → 0.18（好みで0.15〜0.22）
-    const base = Math.min(canvas.clientWidth, canvas.clientHeight) * 0.18;
-    bunny.h = base;
-    bunny.w = base * (img.width / img.height);
-
-    resize();
-    resetBunny();
-    requestAnimationFrame(step);
-  };
-
-  resize();
-  resetBunny();
-  requestAnimationFrame(step);
+    mountUI({ position: "top-right", title: "BGM" });
+  })();
 })();
