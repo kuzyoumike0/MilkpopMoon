@@ -12,7 +12,7 @@
     canvas.width  = Math.floor(canvas.clientWidth  * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    initStarsAndClouds();
+    initStarsAndClouds(); // 画面サイズに合わせて作り直す
   }
   window.addEventListener("resize", resize);
 
@@ -27,6 +27,33 @@
   const clickSE = new Audio(CLICK_SE_SRC);
   clickSE.volume = 0.8;
 
+  // iOSなどの「ユーザー操作後に音OK」対策
+  let audioUnlocked = false;
+  function unlockAudioOnce() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    try {
+      clickSE.muted = true;
+      clickSE.currentTime = 0;
+      const p = clickSE.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          clickSE.pause();
+          clickSE.currentTime = 0;
+          clickSE.muted = false;
+        }).catch(() => {
+          clickSE.muted = false;
+        });
+      } else {
+        clickSE.pause();
+        clickSE.currentTime = 0;
+        clickSE.muted = false;
+      }
+    } catch {
+      // 何もしない
+    }
+  }
+
   /* =========================
    * Physics
    * ========================= */
@@ -37,6 +64,7 @@
 
   const JUMP_SPEED_MIN = 850;
   const JUMP_SPEED_MAX = 1250;
+  // 真上±20°：-110°〜-70°
   const ANGLE_MIN = (-110) * Math.PI / 180;
   const ANGLE_MAX = (-70)  * Math.PI / 180;
 
@@ -67,12 +95,14 @@
   }
 
   function jumpBoost() {
+    // SE（連打でも毎回頭から）
     clickSE.currentTime = 0;
     clickSE.play().catch(() => {});
 
     const angle = rand(ANGLE_MIN, ANGLE_MAX);
     const speed = rand(JUMP_SPEED_MIN, JUMP_SPEED_MAX);
 
+    // 空中追いジャンプでも自然に：vxは少し足す、vyは上方向を強める
     bunny.vx += Math.cos(angle) * speed * 0.45;
     bunny.vy = Math.min(bunny.vy, 0);
     bunny.vy += Math.sin(angle) * speed;
@@ -88,21 +118,34 @@
     return mx >= left && mx <= left + w && my >= top && my <= top + h;
   }
 
+  // pointer / touch / mouse 安全対応
   function getPointerPos(e) {
     const rect = canvas.getBoundingClientRect();
-    return {
-      x: (e.clientX ?? e.touches[0].clientX) - rect.left,
-      y: (e.clientY ?? e.touches[0].clientY) - rect.top,
-    };
+
+    // PointerEvent（推奨）
+    if (typeof e.clientX === "number" && typeof e.clientY === "number") {
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    // TouchEvent
+    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+    if (t) {
+      return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+    }
+
+    // 最後の保険
+    return { x: 0, y: 0 };
   }
 
   canvas.addEventListener("pointerdown", (e) => {
+    unlockAudioOnce(); // 最初の操作で音を解禁
+
     const p = getPointerPos(e);
     if (isHit(p.x, p.y)) jumpBoost();
   });
 
   /* =========================
-   * Background Color
+   * Background Color (height-based)
    * ========================= */
   const BG_GROUND = { r: 255, g: 245, b: 250 };
   const BG_SKY    = { r: 180, g: 220, b: 255 };
@@ -146,6 +189,7 @@
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
 
+    // 星
     for (let i = 0; i < STAR_COUNT; i++) {
       stars.push({
         x: Math.random() * W,
@@ -156,6 +200,7 @@
       });
     }
 
+    // 虹雲
     for (let i = 0; i < CLOUD_COUNT; i++) {
       clouds.push({
         x: Math.random() * W,
@@ -188,6 +233,18 @@
     ctx.restore();
   }
 
+  // roundRect が無い環境用に、角丸矩形を自前で描く
+  function pathRoundRect(x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
   function drawRainbowClouds(heightT, dt) {
     const cloudT = smoothstep((heightT - CLOUD_START_T) / (CLOUD_FULL_T - CLOUD_START_T));
     if (cloudT <= 0) return;
@@ -201,18 +258,25 @@
       if (c.x > W) c.x = -c.w;
 
       const g = ctx.createLinearGradient(c.x, c.y, c.x + c.w, c.y);
-      g.addColorStop(0, "rgba(255,100,200,0)");
+      g.addColorStop(0,   "rgba(255,100,200,0)");
       g.addColorStop(0.2, "rgba(255,150,80,0.7)");
       g.addColorStop(0.4, "rgba(255,255,120,0.7)");
       g.addColorStop(0.6, "rgba(120,255,170,0.7)");
       g.addColorStop(0.8, "rgba(120,190,255,0.7)");
-      g.addColorStop(1, "rgba(180,140,255,0)");
+      g.addColorStop(1,   "rgba(180,140,255,0)");
 
       ctx.globalAlpha = c.a * cloudT;
       ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.roundRect(c.x, c.y, c.w, c.h, c.h / 2);
-      ctx.fill();
+
+      const r = c.h / 2;
+      if (typeof ctx.roundRect === "function") {
+        ctx.beginPath();
+        ctx.roundRect(c.x, c.y, c.w, c.h, r);
+        ctx.fill();
+      } else {
+        pathRoundRect(c.x, c.y, c.w, c.h, r);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
@@ -239,9 +303,11 @@
     const halfW = bunny.w / 2;
     const halfH = bunny.h / 2;
 
+    // walls
     if (bunny.x < halfW) { bunny.x = halfW; bunny.vx *= -0.5; }
     if (bunny.x > W - halfW) { bunny.x = W - halfW; bunny.vx *= -0.5; }
 
+    // floor
     if (bunny.y > floorY - halfH) {
       bunny.y = floorY - halfH;
       if (Math.abs(bunny.vy) > 250) {
@@ -256,7 +322,7 @@
       bunny.onGround = false;
     }
 
-    // height normalize
+    // height normalize (0..1)
     let heightT = (floorY - bunny.y) / (H * 0.75);
     heightT = clamp01(heightT);
 
@@ -270,7 +336,7 @@
     ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
     ctx.fillRect(0, 0, W, H);
 
-    // background effects
+    // effects
     drawStars(heightT, now / 1000);
     drawRainbowClouds(heightT, dt);
 
@@ -300,6 +366,7 @@
     const base = Math.min(canvas.clientWidth, canvas.clientHeight) * 0.35;
     bunny.h = base;
     bunny.w = base * (img.width / img.height);
+
     resize();
     resetBunny();
     requestAnimationFrame(step);
