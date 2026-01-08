@@ -25,7 +25,6 @@
 
   let imgReady = false;
   let imgError = "";
-
   img.onload = () => { imgReady = true; };
   img.onerror = () => {
     imgReady = false;
@@ -41,7 +40,6 @@
   const clickSE = new Audio(CLICK_SE_SRC);
   clickSE.volume = 0.8;
 
-  // iOS等の「ユーザー操作後に音OK」対策
   let audioUnlocked = false;
   function unlockAudioOnce() {
     if (audioUnlocked) return;
@@ -65,6 +63,13 @@
   }
 
   /* =========================
+   * Helpers
+   * ========================= */
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+  const smoothstep = (t) => { t = clamp01(t); return t * t * (3 - 2 * t); };
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  /* =========================
    * Physics
    * ========================= */
   const GRAVITY = 1800;     // +下
@@ -74,7 +79,7 @@
 
   const JUMP_SPEED_MIN = 850;
   const JUMP_SPEED_MAX = 1250;
-  const ANGLE_MIN = (-110) * Math.PI / 180;
+  const ANGLE_MIN = (-110) * Math.PI / 180; // 真上±20°
   const ANGLE_MAX = (-70)  * Math.PI / 180;
 
   const HIT_PADDING = 10;
@@ -82,48 +87,51 @@
   /* =========================
    * World / Camera
    * =========================
-   * - ワールドY: 下が+（重力と同じ）
-   * - 地面は worldY = 0
-   * - カメラ cameraY は「画面に映すためのワールドYオフセット」
-   *   screenY = worldY - cameraY
+   * worldY: 下が+ / 地面は 0 / 上に登るほどマイナス
    */
   const FLOOR_Y = 0;
+
+  // cameraY = 画面上端が指すワールドY（screenY = worldY - cameraY）
   let cameraY = 0;
 
-  // うさぎがこのラインより上に行ったら、カメラが追従して上へ
-  const CAMERA_FOLLOW_LINE_RATIO = 0.35; // 画面上から35%の位置
-  const CAMERA_EASE = 0.14;              // 追従の滑らかさ
+  // うさぎがこの高さ（画面上）より上へ行ったらカメラが追う
+  const FOLLOW_LINE_RATIO = 0.40; // 画面上から40%
+  const CAMERA_EASE = 0.10;       // 追従の滑らかさ（小さいほど安定）
 
-  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
-  function smoothstep(t) { t = clamp01(t); return t * t * (3 - 2 * t); }
-  function lerp(a, b, t) { return a + (b - a) * t; }
+  // ★登り感：カメラは「上にだけ」動く（戻らない）
+  function updateCamera(bunnyWorldY, H) {
+    const followLine = H * FOLLOW_LINE_RATIO;          // 画面上の追従ライン
+    const targetCameraY = bunnyWorldY - followLine;    // うさぎをラインに置く
+    // カメラは上に行く（cameraYがより小さくなる）ときだけ追従
+    if (targetCameraY < cameraY) {
+      cameraY = lerp(cameraY, targetCameraY, CAMERA_EASE);
+    }
+  }
 
   /* =========================
    * Bunny (world coords)
    * ========================= */
   const bunny = {
-    x: 0,        // 画面基準（横はカメラ不要）
-    y: 0,        // ワールド座標
+    x: 0,
+    y: 0,      // worldY
     vx: 0,
     vy: 0,
-    w: 160,
-    h: 160,
+    w: 120,
+    h: 120,
     onGround: false,
   };
 
   function resetBunny() {
     const W = canvas.clientWidth;
     bunny.x = W * 0.5;
-    bunny.y = FLOOR_Y - (bunny.h / 2); // 地面に乗せる
+    bunny.y = FLOOR_Y - bunny.h / 2;
     bunny.vx = 0;
     bunny.vy = 0;
     bunny.onGround = true;
-    cameraY = 0; // 地面スタート
+    cameraY = 0;
   }
 
-  function rand(min, max) {
-    return min + Math.random() * (max - min);
-  }
+  function rand(min, max) { return min + Math.random() * (max - min); }
 
   function jumpBoost() {
     clickSE.currentTime = 0;
@@ -132,7 +140,6 @@
     const angle = rand(ANGLE_MIN, ANGLE_MAX);
     const speed = rand(JUMP_SPEED_MIN, JUMP_SPEED_MAX);
 
-    // 横は少し、縦は上方向（sinは負になる角度域）
     bunny.vx += Math.cos(angle) * speed * 0.45;
     bunny.vy = Math.min(bunny.vy, 0);
     bunny.vy += Math.sin(angle) * speed;
@@ -140,7 +147,7 @@
     bunny.onGround = false;
   }
 
-  // ワールド座標→スクリーン座標
+  // world→screen
   function bunnyScreenRect() {
     const sx = bunny.x;
     const sy = bunny.y - cameraY;
@@ -173,24 +180,23 @@
     return { x: 0, y: 0 };
   }
 
-  // スクロール防止（ページが上に動く対策）
+  // スクロール防止 + 操作
   canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     unlockAudioOnce();
     const p = getPointerPos(e);
     if (isHit(p.x, p.y)) jumpBoost();
   }, { passive: false });
-
   canvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
   canvas.addEventListener("touchmove",  (e) => e.preventDefault(), { passive: false });
 
   /* =========================
-   * Background (height-based)
+   * Background (登り感)
    * ========================= */
+  // 高度で色変化
   const BG_GROUND = { r: 255, g: 245, b: 250 };
   const BG_SKY    = { r: 180, g: 220, b: 255 };
   const BG_SPACE  = { r: 30,  g: 40,  b: 80  };
-
   function lerpColor(c1, c2, t) {
     return {
       r: Math.round(lerp(c1.r, c2.r, t)),
@@ -199,12 +205,77 @@
     };
   }
 
+  // ★登ってる感を強くする：高度ライン（目盛り）+ パララックス帯
+  function drawClimbBackground(W, H, altitude, heightT) {
+    // 1) ベース色
+    let bg;
+    if (heightT < 0.5) bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
+    else bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
+    ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // 2) パララックス帯（ゆっくり流れる層）: altitudeで下に流れて見える
+    //    ※ altitudeが増えるほど背景が動く＝登ってる感
+    const p1 = (altitude * 0.15) % (H * 0.6);
+    const p2 = (altitude * 0.30) % (H * 0.8);
+
+    ctx.save();
+    ctx.globalAlpha = 0.10 + 0.20 * heightT;
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+    for (let i = -2; i < 6; i++) {
+      const y = i * (H * 0.6) + (H * 0.6) - p1;
+      ctx.fillRect(0, y, W, 22);
+    }
+    ctx.globalAlpha = 0.08 + 0.18 * heightT;
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    for (let i = -2; i < 6; i++) {
+      const y = i * (H * 0.8) + (H * 0.8) - p2;
+      ctx.fillRect(0, y, W, 10);
+    }
+    ctx.restore();
+
+    // 3) 高度目盛りライン（これが一番“登ってる”を作る）
+    //    画面上で「上から下へ流れる」ように表示：世界座標で等間隔に刻む
+    const tickStep = 250; // world単位（px）ごとに目盛り
+    // 画面上端/下端が示す worldY を使って、表示範囲の目盛りを描く
+    const topWorld = cameraY;
+    const bottomWorld = cameraY + H;
+
+    // 目盛りは worldY=-tickValue（高度）なので、worldYが負の領域で出てくる
+    const minAlt = Math.max(0, Math.floor((FLOOR_Y - bottomWorld) / tickStep) * tickStep);
+    const maxAlt = Math.max(0, Math.ceil((FLOOR_Y - topWorld) / tickStep) * tickStep);
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(0,0,0,0.10)";
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.font = "12px system-ui, -apple-system, Segoe UI, sans-serif";
+
+    for (let a = minAlt; a <= maxAlt; a += tickStep) {
+      const worldY = FLOOR_Y - a;       // altitude a の worldY
+      const y = worldY - cameraY;       // screenY
+      // 太線/細線
+      const major = (a % (tickStep * 4) === 0);
+      ctx.globalAlpha = major ? 0.22 : 0.12;
+      ctx.lineWidth = major ? 2 : 1;
+
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+      ctx.stroke();
+
+      if (major) {
+        ctx.globalAlpha = 0.55;
+        ctx.fillText(`ALT ${a}`, 10, y - 6);
+      }
+    }
+    ctx.restore();
+  }
+
   /* =========================
-   * Stars & Rainbow Clouds
+   * Stars & Rainbow Clouds（高度演出）
    * ========================= */
   const SPACE_START_T = 0.72;
   const SPACE_FULL_T  = 0.95;
-
   const CLOUD_START_T = 0.45;
   const CLOUD_FULL_T  = 0.70;
 
@@ -323,21 +394,21 @@
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
 
-    /* ---- physics in world ---- */
+    /* ---- physics (world) ---- */
     bunny.vy += GRAVITY * dt;
     bunny.x += bunny.vx * dt;
     bunny.y += bunny.vy * dt;
     bunny.vx *= Math.pow(AIR_DRAG, dt * 60);
 
-    // 壁（横）
+    // 壁
     const halfW = bunny.w / 2;
     if (bunny.x < halfW) { bunny.x = halfW; bunny.vx *= -0.5; }
     if (bunny.x > W - halfW) { bunny.x = W - halfW; bunny.vx *= -0.5; }
 
-    // 地面（world y = 0）
+    // 地面
     const halfH = bunny.h / 2;
-    const bunnyBottom = bunny.y + halfH;
-    if (bunnyBottom > FLOOR_Y) {
+    const bottom = bunny.y + halfH;
+    if (bottom > FLOOR_Y) {
       bunny.y = FLOOR_Y - halfH;
       if (Math.abs(bunny.vy) > 250) {
         bunny.vy *= -BOUNCE;
@@ -351,33 +422,16 @@
       bunny.onGround = false;
     }
 
-    /* ---- camera follow (up) ---- */
-    const followLine = H * CAMERA_FOLLOW_LINE_RATIO; // スクリーンY
-    const bunnyScreenY = bunny.y - cameraY;          // 現在スクリーン上のうさぎY
-    const desiredCameraY = bunny.y - followLine;     // うさぎをfollowLineに置くためのカメラ
+    /* ---- camera (only up) ---- */
+    updateCamera(bunny.y, H);
 
-    // うさぎがラインより上に行ったら（bunnyScreenY < followLine）カメラを上へ（cameraYを減らす方向）
-    if (bunnyScreenY < followLine) {
-      cameraY = lerp(cameraY, desiredCameraY, CAMERA_EASE);
-    } else {
-      // 落ちてきた時は、カメラをゆっくり地面（0）へ戻す（好みでOFF可）
-      cameraY = lerp(cameraY, 0, 0.02);
-    }
-
-    /* ---- height (for background) ----
-     * 高度 = 地面 - うさぎY（地面は0、上に行くほど bunny.y が負）
-     */
-    const altitude = FLOOR_Y - bunny.y; // 上ほど大きい
+    /* ---- altitude & heightT ---- */
+    const altitude = Math.max(0, FLOOR_Y - bunny.y); // 上ほど大きい
     let heightT = altitude / (H * 0.75);
     heightT = clamp01(heightT);
 
-    /* ---- background color ---- */
-    let bg;
-    if (heightT < 0.5) bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
-    else bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
-
-    ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
-    ctx.fillRect(0, 0, W, H);
+    /* ---- background (climb feel) ---- */
+    drawClimbBackground(W, H, altitude, heightT);
 
     /* ---- effects (screen space) ---- */
     drawStars(heightT, now / 1000);
@@ -385,10 +439,10 @@
 
     /* ---- draw world with camera ---- */
     ctx.save();
-    ctx.translate(0, -cameraY); // ★ここがカメラ移動
+    ctx.translate(0, -cameraY);
 
-    // 地面ライン（world y=0）
-    ctx.strokeStyle = "rgba(0,0,0,0.10)";
+    // 地面ライン
+    ctx.strokeStyle = "rgba(0,0,0,0.12)";
     ctx.beginPath();
     ctx.moveTo(0, FLOOR_Y);
     ctx.lineTo(W, FLOOR_Y);
@@ -398,16 +452,21 @@
     if (imgReady) {
       ctx.drawImage(img, bunny.x - bunny.w / 2, bunny.y - bunny.h / 2, bunny.w, bunny.h);
     } else {
-      // フォールバック
       ctx.fillStyle = "rgba(255,120,170,0.9)";
       ctx.beginPath();
       ctx.arc(bunny.x, bunny.y, Math.min(bunny.w, bunny.h) * 0.35, 0, Math.PI * 2);
       ctx.fill();
     }
-
     ctx.restore();
 
-    // 画像エラー表示（画面固定）
+    /* ---- UI: 高度表示（固定） ---- */
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
+    ctx.fillText(`ALT: ${Math.floor(altitude)}`, 12, 28);
+    ctx.restore();
+
+    /* ---- image error ---- */
     if (!imgReady && imgError) {
       ctx.save();
       ctx.fillStyle = "rgba(255,255,255,0.92)";
@@ -428,7 +487,8 @@
   img.onload = () => {
     imgReady = true;
 
-    const base = Math.min(canvas.clientWidth, canvas.clientHeight) * 0.35;
+    // ★うさぎを小さくする：0.35 → 0.18（好みで0.15〜0.22）
+    const base = Math.min(canvas.clientWidth, canvas.clientHeight) * 0.18;
     bunny.h = base;
     bunny.w = base * (img.width / img.height);
 
