@@ -17,7 +17,7 @@
   window.addEventListener("resize", resize);
 
   /* =========================
-   * Assets（★ここが指定パス）
+   * Assets（指定パス）
    * ========================= */
   const IMG_SRC = "./assets/bunny.png";
   const img = new Image();
@@ -36,12 +36,12 @@
       `✅ Live Server など http で開いているか`;
   };
 
-  /* ===== SE（★ここが指定パス） ===== */
+  /* ===== SE（指定パス） ===== */
   const CLICK_SE_SRC = "./assets/se/Onoma-Pop03-1(High).mp3";
   const clickSE = new Audio(CLICK_SE_SRC);
   clickSE.volume = 0.8;
 
-  // iOSなどの「ユーザー操作後に音OK」対策
+  // iOS等の「ユーザー操作後に音OK」対策
   let audioUnlocked = false;
   function unlockAudioOnce() {
     if (audioUnlocked) return;
@@ -55,23 +55,19 @@
           clickSE.pause();
           clickSE.currentTime = 0;
           clickSE.muted = false;
-        }).catch(() => {
-          clickSE.muted = false;
-        });
+        }).catch(() => { clickSE.muted = false; });
       } else {
         clickSE.pause();
         clickSE.currentTime = 0;
         clickSE.muted = false;
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   /* =========================
    * Physics
    * ========================= */
-  const GRAVITY = 1800;
+  const GRAVITY = 1800;     // +下
   const AIR_DRAG = 0.995;
   const BOUNCE = 0.35;
   const FLOOR_FRICTION = 0.85;
@@ -81,29 +77,53 @@
   const ANGLE_MIN = (-110) * Math.PI / 180;
   const ANGLE_MAX = (-70)  * Math.PI / 180;
 
-  const HIT_PADDING = 8;
+  const HIT_PADDING = 10;
 
   /* =========================
-   * Bunny
+   * World / Camera
+   * =========================
+   * - ワールドY: 下が+（重力と同じ）
+   * - 地面は worldY = 0
+   * - カメラ cameraY は「画面に映すためのワールドYオフセット」
+   *   screenY = worldY - cameraY
+   */
+  const FLOOR_Y = 0;
+  let cameraY = 0;
+
+  // うさぎがこのラインより上に行ったら、カメラが追従して上へ
+  const CAMERA_FOLLOW_LINE_RATIO = 0.35; // 画面上から35%の位置
+  const CAMERA_EASE = 0.14;              // 追従の滑らかさ
+
+  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+  function smoothstep(t) { t = clamp01(t); return t * t * (3 - 2 * t); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  /* =========================
+   * Bunny (world coords)
    * ========================= */
   const bunny = {
-    x: 0, y: 0,
-    vx: 0, vy: 0,
-    w: 160, h: 160,
+    x: 0,        // 画面基準（横はカメラ不要）
+    y: 0,        // ワールド座標
+    vx: 0,
+    vy: 0,
+    w: 160,
+    h: 160,
     onGround: false,
   };
 
   function resetBunny() {
     const W = canvas.clientWidth;
-    const H = canvas.clientHeight;
     bunny.x = W * 0.5;
-    bunny.y = H * 0.75;
+    bunny.y = FLOOR_Y - (bunny.h / 2); // 地面に乗せる
     bunny.vx = 0;
     bunny.vy = 0;
     bunny.onGround = true;
+    cameraY = 0; // 地面スタート
   }
 
-  function rand(min, max) { return min + Math.random() * (max - min); }
+  function rand(min, max) {
+    return min + Math.random() * (max - min);
+  }
 
   function jumpBoost() {
     clickSE.currentTime = 0;
@@ -112,6 +132,7 @@
     const angle = rand(ANGLE_MIN, ANGLE_MAX);
     const speed = rand(JUMP_SPEED_MIN, JUMP_SPEED_MAX);
 
+    // 横は少し、縦は上方向（sinは負になる角度域）
     bunny.vx += Math.cos(angle) * speed * 0.45;
     bunny.vy = Math.min(bunny.vy, 0);
     bunny.vy += Math.sin(angle) * speed;
@@ -119,11 +140,26 @@
     bunny.onGround = false;
   }
 
+  // ワールド座標→スクリーン座標
+  function bunnyScreenRect() {
+    const sx = bunny.x;
+    const sy = bunny.y - cameraY;
+    return {
+      left: sx - bunny.w / 2,
+      top:  sy - bunny.h / 2,
+      w: bunny.w,
+      h: bunny.h,
+      cx: sx,
+      cy: sy,
+    };
+  }
+
   function isHit(mx, my) {
-    const left = bunny.x - bunny.w / 2 - HIT_PADDING;
-    const top  = bunny.y - bunny.h / 2 - HIT_PADDING;
-    const w    = bunny.w + HIT_PADDING * 2;
-    const h    = bunny.h + HIT_PADDING * 2;
+    const r = bunnyScreenRect();
+    const left = r.left - HIT_PADDING;
+    const top  = r.top  - HIT_PADDING;
+    const w    = r.w + HIT_PADDING * 2;
+    const h    = r.h + HIT_PADDING * 2;
     return mx >= left && mx <= left + w && my >= top && my <= top + h;
   }
 
@@ -137,20 +173,24 @@
     return { x: 0, y: 0 };
   }
 
+  // スクロール防止（ページが上に動く対策）
   canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
     unlockAudioOnce();
     const p = getPointerPos(e);
     if (isHit(p.x, p.y)) jumpBoost();
-  });
+  }, { passive: false });
+
+  canvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  canvas.addEventListener("touchmove",  (e) => e.preventDefault(), { passive: false });
 
   /* =========================
-   * Background Color (height-based)
+   * Background (height-based)
    * ========================= */
   const BG_GROUND = { r: 255, g: 245, b: 250 };
   const BG_SKY    = { r: 180, g: 220, b: 255 };
   const BG_SPACE  = { r: 30,  g: 40,  b: 80  };
 
-  function lerp(a, b, t) { return a + (b - a) * t; }
   function lerpColor(c1, c2, t) {
     return {
       r: Math.round(lerp(c1.r, c2.r, t)),
@@ -174,9 +214,6 @@
 
   const stars = [];
   const clouds = [];
-
-  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
-  function smoothstep(t) { t = clamp01(t); return t * t * (3 - 2 * t); }
 
   function initStarsAndClouds() {
     stars.length = 0;
@@ -227,7 +264,6 @@
     ctx.restore();
   }
 
-  // roundRectが無い環境のための角丸パス
   function pathRoundRect(x, y, w, h, r) {
     r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
     ctx.beginPath();
@@ -286,24 +322,23 @@
 
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
-    const floorY = H - 10;
 
-    // physics
+    /* ---- physics in world ---- */
     bunny.vy += GRAVITY * dt;
     bunny.x += bunny.vx * dt;
     bunny.y += bunny.vy * dt;
     bunny.vx *= Math.pow(AIR_DRAG, dt * 60);
 
+    // 壁（横）
     const halfW = bunny.w / 2;
-    const halfH = bunny.h / 2;
-
-    // walls
     if (bunny.x < halfW) { bunny.x = halfW; bunny.vx *= -0.5; }
     if (bunny.x > W - halfW) { bunny.x = W - halfW; bunny.vx *= -0.5; }
 
-    // floor
-    if (bunny.y > floorY - halfH) {
-      bunny.y = floorY - halfH;
+    // 地面（world y = 0）
+    const halfH = bunny.h / 2;
+    const bunnyBottom = bunny.y + halfH;
+    if (bunnyBottom > FLOOR_Y) {
+      bunny.y = FLOOR_Y - halfH;
       if (Math.abs(bunny.vy) > 250) {
         bunny.vy *= -BOUNCE;
         bunny.onGround = false;
@@ -316,11 +351,27 @@
       bunny.onGround = false;
     }
 
-    // height normalize
-    let heightT = (floorY - bunny.y) / (H * 0.75);
+    /* ---- camera follow (up) ---- */
+    const followLine = H * CAMERA_FOLLOW_LINE_RATIO; // スクリーンY
+    const bunnyScreenY = bunny.y - cameraY;          // 現在スクリーン上のうさぎY
+    const desiredCameraY = bunny.y - followLine;     // うさぎをfollowLineに置くためのカメラ
+
+    // うさぎがラインより上に行ったら（bunnyScreenY < followLine）カメラを上へ（cameraYを減らす方向）
+    if (bunnyScreenY < followLine) {
+      cameraY = lerp(cameraY, desiredCameraY, CAMERA_EASE);
+    } else {
+      // 落ちてきた時は、カメラをゆっくり地面（0）へ戻す（好みでOFF可）
+      cameraY = lerp(cameraY, 0, 0.02);
+    }
+
+    /* ---- height (for background) ----
+     * 高度 = 地面 - うさぎY（地面は0、上に行くほど bunny.y が負）
+     */
+    const altitude = FLOOR_Y - bunny.y; // 上ほど大きい
+    let heightT = altitude / (H * 0.75);
     heightT = clamp01(heightT);
 
-    // background color
+    /* ---- background color ---- */
     let bg;
     if (heightT < 0.5) bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
     else bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
@@ -328,43 +379,44 @@
     ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
     ctx.fillRect(0, 0, W, H);
 
-    // background effects
+    /* ---- effects (screen space) ---- */
     drawStars(heightT, now / 1000);
     drawRainbowClouds(heightT, dt);
 
-    // ground line
-    ctx.strokeStyle = "rgba(0,0,0,0.08)";
+    /* ---- draw world with camera ---- */
+    ctx.save();
+    ctx.translate(0, -cameraY); // ★ここがカメラ移動
+
+    // 地面ライン（world y=0）
+    ctx.strokeStyle = "rgba(0,0,0,0.10)";
     ctx.beginPath();
-    ctx.moveTo(0, floorY);
-    ctx.lineTo(W, floorY);
+    ctx.moveTo(0, FLOOR_Y);
+    ctx.lineTo(W, FLOOR_Y);
     ctx.stroke();
 
-    // bunny
+    // うさぎ
     if (imgReady) {
       ctx.drawImage(img, bunny.x - bunny.w / 2, bunny.y - bunny.h / 2, bunny.w, bunny.h);
     } else {
-      // フォールバック（画像が無くても動作確認できる）
+      // フォールバック
       ctx.fillStyle = "rgba(255,120,170,0.9)";
       ctx.beginPath();
       ctx.arc(bunny.x, bunny.y, Math.min(bunny.w, bunny.h) * 0.35, 0, Math.PI * 2);
       ctx.fill();
+    }
 
-      if (imgError) {
-        ctx.save();
-        ctx.fillStyle = "rgba(255,255,255,0.92)";
-        ctx.fillRect(12, 52, Math.min(W - 24, 560), 120);
-        ctx.fillStyle = "#b00020";
-        ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
-        const lines = imgError.split("\n");
-        lines.forEach((line, i) => ctx.fillText(line, 20, 78 + i * 18));
-        ctx.restore();
-      } else {
-        ctx.save();
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
-        ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
-        ctx.fillText("画像読み込み中…", 20, 78);
-        ctx.restore();
-      }
+    ctx.restore();
+
+    // 画像エラー表示（画面固定）
+    if (!imgReady && imgError) {
+      ctx.save();
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillRect(12, 52, Math.min(W - 24, 560), 120);
+      ctx.fillStyle = "#b00020";
+      ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
+      const lines = imgError.split("\n");
+      lines.forEach((line, i) => ctx.fillText(line, 20, 78 + i * 18));
+      ctx.restore();
     }
 
     requestAnimationFrame(step);
