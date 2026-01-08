@@ -1,9 +1,6 @@
 (() => {
   "use strict";
 
-  /* =========================
-   * Canvas
-   * ========================= */
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
 
@@ -12,22 +9,34 @@
     canvas.width  = Math.floor(canvas.clientWidth  * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    initStarsAndClouds(); // 画面サイズに合わせて作り直す
+    initStarsAndClouds();
   }
   window.addEventListener("resize", resize);
 
   /* =========================
    * Assets
    * ========================= */
+  const IMG_SRC = "./bunny.png"; // ★ここが一致してるか確認
   const img = new Image();
-  img.src = "./bunny.png";
+  img.src = IMG_SRC;
+
+  let imgReady = false;
+  let imgError = "";
+
+  img.onload = () => { imgReady = true; };
+  img.onerror = () => {
+    imgReady = false;
+    imgError = `画像読み込み失敗: ${IMG_SRC}\n` +
+               `✅ bunny.png が index.html と同じ階層にあるか\n` +
+               `✅ ファイル名の大文字小文字/拡張子が一致してるか\n` +
+               `✅ Live Server など http で開いているか`;
+  };
 
   /* ===== SE ===== */
   const CLICK_SE_SRC = "./assets/se/Onoma-Pop03-1(High).mp3";
   const clickSE = new Audio(CLICK_SE_SRC);
   clickSE.volume = 0.8;
 
-  // iOSなどの「ユーザー操作後に音OK」対策
   let audioUnlocked = false;
   function unlockAudioOnce() {
     if (audioUnlocked) return;
@@ -41,17 +50,13 @@
           clickSE.pause();
           clickSE.currentTime = 0;
           clickSE.muted = false;
-        }).catch(() => {
-          clickSE.muted = false;
-        });
+        }).catch(() => { clickSE.muted = false; });
       } else {
         clickSE.pause();
         clickSE.currentTime = 0;
         clickSE.muted = false;
       }
-    } catch {
-      // 何もしない
-    }
+    } catch {}
   }
 
   /* =========================
@@ -64,7 +69,6 @@
 
   const JUMP_SPEED_MIN = 850;
   const JUMP_SPEED_MAX = 1250;
-  // 真上±20°：-110°〜-70°
   const ANGLE_MIN = (-110) * Math.PI / 180;
   const ANGLE_MAX = (-70)  * Math.PI / 180;
 
@@ -90,19 +94,15 @@
     bunny.onGround = true;
   }
 
-  function rand(min, max) {
-    return min + Math.random() * (max - min);
-  }
+  function rand(min, max) { return min + Math.random() * (max - min); }
 
   function jumpBoost() {
-    // SE（連打でも毎回頭から）
     clickSE.currentTime = 0;
     clickSE.play().catch(() => {});
 
     const angle = rand(ANGLE_MIN, ANGLE_MAX);
     const speed = rand(JUMP_SPEED_MIN, JUMP_SPEED_MAX);
 
-    // 空中追いジャンプでも自然に：vxは少し足す、vyは上方向を強める
     bunny.vx += Math.cos(angle) * speed * 0.45;
     bunny.vy = Math.min(bunny.vy, 0);
     bunny.vy += Math.sin(angle) * speed;
@@ -118,34 +118,22 @@
     return mx >= left && mx <= left + w && my >= top && my <= top + h;
   }
 
-  // pointer / touch / mouse 安全対応
   function getPointerPos(e) {
     const rect = canvas.getBoundingClientRect();
-
-    // PointerEvent（推奨）
-    if (typeof e.clientX === "number" && typeof e.clientY === "number") {
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    }
-
-    // TouchEvent
+    if (typeof e.clientX === "number") return { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
-    if (t) {
-      return { x: t.clientX - rect.left, y: t.clientY - rect.top };
-    }
-
-    // 最後の保険
+    if (t) return { x: t.clientX - rect.left, y: t.clientY - rect.top };
     return { x: 0, y: 0 };
   }
 
   canvas.addEventListener("pointerdown", (e) => {
-    unlockAudioOnce(); // 最初の操作で音を解禁
-
+    unlockAudioOnce();
     const p = getPointerPos(e);
     if (isHit(p.x, p.y)) jumpBoost();
   });
 
   /* =========================
-   * Background Color (height-based)
+   * Background
    * ========================= */
   const BG_GROUND = { r: 255, g: 245, b: 250 };
   const BG_SKY    = { r: 180, g: 220, b: 255 };
@@ -161,7 +149,7 @@
   }
 
   /* =========================
-   * Stars & Rainbow Clouds
+   * Stars & Clouds
    * ========================= */
   const SPACE_START_T = 0.72;
   const SPACE_FULL_T  = 0.95;
@@ -177,10 +165,7 @@
   const clouds = [];
 
   function clamp01(x) { return Math.max(0, Math.min(1, x)); }
-  function smoothstep(t) {
-    t = clamp01(t);
-    return t * t * (3 - 2 * t);
-  }
+  function smoothstep(t) { t = clamp01(t); return t * t * (3 - 2 * t); }
 
   function initStarsAndClouds() {
     stars.length = 0;
@@ -189,7 +174,6 @@
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
 
-    // 星
     for (let i = 0; i < STAR_COUNT; i++) {
       stars.push({
         x: Math.random() * W,
@@ -200,7 +184,6 @@
       });
     }
 
-    // 虹雲
     for (let i = 0; i < CLOUD_COUNT; i++) {
       clouds.push({
         x: Math.random() * W,
@@ -233,7 +216,6 @@
     ctx.restore();
   }
 
-  // roundRect が無い環境用に、角丸矩形を自前で描く
   function pathRoundRect(x, y, w, h, r) {
     r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
     ctx.beginPath();
@@ -282,7 +264,7 @@
   }
 
   /* =========================
-   * Main Loop
+   * Loop
    * ========================= */
   let last = performance.now();
 
@@ -303,11 +285,9 @@
     const halfW = bunny.w / 2;
     const halfH = bunny.h / 2;
 
-    // walls
     if (bunny.x < halfW) { bunny.x = halfW; bunny.vx *= -0.5; }
     if (bunny.x > W - halfW) { bunny.x = W - halfW; bunny.vx *= -0.5; }
 
-    // floor
     if (bunny.y > floorY - halfH) {
       bunny.y = floorY - halfH;
       if (Math.abs(bunny.vy) > 250) {
@@ -322,39 +302,58 @@
       bunny.onGround = false;
     }
 
-    // height normalize (0..1)
+    // height normalize
     let heightT = (floorY - bunny.y) / (H * 0.75);
     heightT = clamp01(heightT);
 
-    // background color
+    // bg color
     let bg;
-    if (heightT < 0.5) {
-      bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
-    } else {
-      bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
-    }
+    if (heightT < 0.5) bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
+    else bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
+
     ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
     ctx.fillRect(0, 0, W, H);
 
-    // effects
     drawStars(heightT, now / 1000);
     drawRainbowClouds(heightT, dt);
 
-    // ground
+    // ground line
     ctx.strokeStyle = "rgba(0,0,0,0.08)";
     ctx.beginPath();
     ctx.moveTo(0, floorY);
     ctx.lineTo(W, floorY);
     ctx.stroke();
 
-    // bunny
-    ctx.drawImage(
-      img,
-      bunny.x - bunny.w / 2,
-      bunny.y - bunny.h / 2,
-      bunny.w,
-      bunny.h
-    );
+    // bunny (or fallback)
+    if (imgReady) {
+      ctx.drawImage(img, bunny.x - bunny.w / 2, bunny.y - bunny.h / 2, bunny.w, bunny.h);
+    } else {
+      // 代替：ピンクの丸（画像が読めない時もゲーム自体は動く）
+      ctx.fillStyle = "rgba(255,120,170,0.9)";
+      ctx.beginPath();
+      ctx.arc(bunny.x, bunny.y, Math.min(bunny.w, bunny.h) * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+
+      // エラー文を画面に表示
+      if (imgError) {
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.fillRect(12, 52, Math.min(W - 24, 520), 120);
+        ctx.fillStyle = "#b00020";
+        ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
+        const lines = imgError.split("\n");
+        lines.forEach((line, i) => ctx.fillText(line, 20, 78 + i * 18));
+        ctx.restore();
+      } else {
+        // まだ読み込み中表示
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
+        ctx.fillText("画像読み込み中…", 20, 78);
+        ctx.restore();
+      }
+    }
 
     requestAnimationFrame(step);
   }
@@ -363,6 +362,8 @@
    * Start
    * ========================= */
   img.onload = () => {
+    imgReady = true;
+
     const base = Math.min(canvas.clientWidth, canvas.clientHeight) * 0.35;
     bunny.h = base;
     bunny.w = base * (img.width / img.height);
@@ -372,6 +373,9 @@
     requestAnimationFrame(step);
   };
 
+  // onerror は上で設定済み
+
   resize();
   resetBunny();
+  requestAnimationFrame(step);
 })();
