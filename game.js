@@ -16,7 +16,7 @@
   /* =========================
    * Assets
    * ========================= */
-  const IMG_SRC = "./bunny.png"; // ★ここが一致してるか確認
+  const IMG_SRC = ".assets/bunny.png"; // ★ここが一致してるか確認
   const img = new Image();
   img.src = IMG_SRC;
 
