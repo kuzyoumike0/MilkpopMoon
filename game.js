@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  /* =========================
+   * Canvas
+   * ========================= */
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d");
 
@@ -14,9 +17,9 @@
   window.addEventListener("resize", resize);
 
   /* =========================
-   * Assets
+   * Assets（★ここが指定パス）
    * ========================= */
-  const IMG_SRC = ".assets/bunny.png"; // ★ここが一致してるか確認
+  const IMG_SRC = "./assets/bunny.png";
   const img = new Image();
   img.src = IMG_SRC;
 
@@ -26,17 +29,19 @@
   img.onload = () => { imgReady = true; };
   img.onerror = () => {
     imgReady = false;
-    imgError = `画像読み込み失敗: ${IMG_SRC}\n` +
-               `✅ bunny.png が index.html と同じ階層にあるか\n` +
-               `✅ ファイル名の大文字小文字/拡張子が一致してるか\n` +
-               `✅ Live Server など http で開いているか`;
+    imgError =
+      `画像読み込み失敗: ${IMG_SRC}\n` +
+      `✅ assets/bunny.png が存在するか\n` +
+      `✅ 大文字小文字・拡張子が一致するか\n` +
+      `✅ Live Server など http で開いているか`;
   };
 
-  /* ===== SE ===== */
+  /* ===== SE（★ここが指定パス） ===== */
   const CLICK_SE_SRC = "./assets/se/Onoma-Pop03-1(High).mp3";
   const clickSE = new Audio(CLICK_SE_SRC);
   clickSE.volume = 0.8;
 
+  // iOSなどの「ユーザー操作後に音OK」対策
   let audioUnlocked = false;
   function unlockAudioOnce() {
     if (audioUnlocked) return;
@@ -50,13 +55,17 @@
           clickSE.pause();
           clickSE.currentTime = 0;
           clickSE.muted = false;
-        }).catch(() => { clickSE.muted = false; });
+        }).catch(() => {
+          clickSE.muted = false;
+        });
       } else {
         clickSE.pause();
         clickSE.currentTime = 0;
         clickSE.muted = false;
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   /* =========================
@@ -120,7 +129,9 @@
 
   function getPointerPos(e) {
     const rect = canvas.getBoundingClientRect();
-    if (typeof e.clientX === "number") return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (typeof e.clientX === "number" && typeof e.clientY === "number") {
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
     const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
     if (t) return { x: t.clientX - rect.left, y: t.clientY - rect.top };
     return { x: 0, y: 0 };
@@ -133,7 +144,7 @@
   });
 
   /* =========================
-   * Background
+   * Background Color (height-based)
    * ========================= */
   const BG_GROUND = { r: 255, g: 245, b: 250 };
   const BG_SKY    = { r: 180, g: 220, b: 255 };
@@ -149,7 +160,7 @@
   }
 
   /* =========================
-   * Stars & Clouds
+   * Stars & Rainbow Clouds
    * ========================= */
   const SPACE_START_T = 0.72;
   const SPACE_FULL_T  = 0.95;
@@ -216,6 +227,7 @@
     ctx.restore();
   }
 
+  // roundRectが無い環境のための角丸パス
   function pathRoundRect(x, y, w, h, r) {
     r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
     ctx.beginPath();
@@ -264,7 +276,7 @@
   }
 
   /* =========================
-   * Loop
+   * Main Loop
    * ========================= */
   let last = performance.now();
 
@@ -285,9 +297,11 @@
     const halfW = bunny.w / 2;
     const halfH = bunny.h / 2;
 
+    // walls
     if (bunny.x < halfW) { bunny.x = halfW; bunny.vx *= -0.5; }
     if (bunny.x > W - halfW) { bunny.x = W - halfW; bunny.vx *= -0.5; }
 
+    // floor
     if (bunny.y > floorY - halfH) {
       bunny.y = floorY - halfH;
       if (Math.abs(bunny.vy) > 250) {
@@ -306,7 +320,7 @@
     let heightT = (floorY - bunny.y) / (H * 0.75);
     heightT = clamp01(heightT);
 
-    // bg color
+    // background color
     let bg;
     if (heightT < 0.5) bg = lerpColor(BG_GROUND, BG_SKY, heightT * 2);
     else bg = lerpColor(BG_SKY, BG_SPACE, (heightT - 0.5) * 2);
@@ -314,6 +328,7 @@
     ctx.fillStyle = `rgb(${bg.r},${bg.g},${bg.b})`;
     ctx.fillRect(0, 0, W, H);
 
+    // background effects
     drawStars(heightT, now / 1000);
     drawRainbowClouds(heightT, dt);
 
@@ -324,31 +339,28 @@
     ctx.lineTo(W, floorY);
     ctx.stroke();
 
-    // bunny (or fallback)
+    // bunny
     if (imgReady) {
       ctx.drawImage(img, bunny.x - bunny.w / 2, bunny.y - bunny.h / 2, bunny.w, bunny.h);
     } else {
-      // 代替：ピンクの丸（画像が読めない時もゲーム自体は動く）
+      // フォールバック（画像が無くても動作確認できる）
       ctx.fillStyle = "rgba(255,120,170,0.9)";
       ctx.beginPath();
       ctx.arc(bunny.x, bunny.y, Math.min(bunny.w, bunny.h) * 0.35, 0, Math.PI * 2);
       ctx.fill();
 
-      // エラー文を画面に表示
       if (imgError) {
         ctx.save();
-        ctx.globalAlpha = 1;
         ctx.fillStyle = "rgba(255,255,255,0.92)";
-        ctx.fillRect(12, 52, Math.min(W - 24, 520), 120);
+        ctx.fillRect(12, 52, Math.min(W - 24, 560), 120);
         ctx.fillStyle = "#b00020";
         ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
         const lines = imgError.split("\n");
         lines.forEach((line, i) => ctx.fillText(line, 20, 78 + i * 18));
         ctx.restore();
       } else {
-        // まだ読み込み中表示
         ctx.save();
-        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
         ctx.font = "14px system-ui, -apple-system, Segoe UI, sans-serif";
         ctx.fillText("画像読み込み中…", 20, 78);
         ctx.restore();
@@ -372,8 +384,6 @@
     resetBunny();
     requestAnimationFrame(step);
   };
-
-  // onerror は上で設定済み
 
   resize();
   resetBunny();
